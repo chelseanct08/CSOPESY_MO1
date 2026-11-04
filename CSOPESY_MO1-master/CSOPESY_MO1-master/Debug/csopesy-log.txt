@@ -1,0 +1,20 @@
+Process Name	Status	Instructions
+p01	Finished	10 / 10
+p02	Finished	15 / 15
+p03	Finished	16 / 16
+p04	Finished	19 / 19
+p05	Finished	15 / 15
+p06	Finished	14 / 14
+p07	Finished	17 / 17
+p08	Finished	19 / 19
+p09	Finished	15 / 15
+p10	Finished	17 / 17
+p11	Finished	12 / 12
+p12	Finished	10 / 10
+p13	Finished	12 / 12
+p14	Finished	19 / 19
+p15	Finished	18 / 18
+ram	Finished	20 / 20
+
+Running processes: 0
+Finished processes: 16
