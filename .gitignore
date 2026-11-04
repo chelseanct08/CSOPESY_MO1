@@ -1,0 +1,11 @@
+.vs/
+.vscode/
+x64/
+Debug/
+Release/
+ipch/
+*.suo
+*.user
+*.vsidx
+*.VC.db
+*.VC.VC.opendb
