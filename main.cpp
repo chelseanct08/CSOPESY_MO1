@@ -2,16 +2,21 @@
 #include "Process.h"
 #include "Scheduler.h"
 
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <conio.h>
-#include <condition_variable>
+#include <cstdlib>
 #include <fstream>
+#include <functional>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -21,204 +26,320 @@
 #include <unordered_map>
 #include <vector>
 
-std::vector<Instruction> generateInstructions(
-    const std::string& name,
-    const Config& config
-) {
-    thread_local std::mt19937 generator(std::random_device{}());
+namespace {
+    std::vector<Instruction> generateInstructions(
+        const std::string& name,
+        const Config& config
+    ) {
+        thread_local std::mt19937 generator(std::random_device{}());
 
-    std::uniform_int_distribution<int> countDistribution(
-        config.minIns, config.maxIns
-    );
-    std::uniform_int_distribution<int> operationDistribution(0, 3);
-    std::uniform_int_distribution<int> variableDistribution(1, 5);
-    std::uniform_int_distribution<int> valueDistribution(0, 100);
-    std::uniform_int_distribution<int> sleepDistribution(1, 3);
+        std::uniform_int_distribution<std::uint64_t> countDistribution(
+            config.minIns, config.maxIns
+        );
+        std::uniform_int_distribution<int> operationDistribution(0, 3);
+        std::uniform_int_distribution<int> variableDistribution(1, 5);
+        std::uniform_int_distribution<int> valueDistribution(0, 100);
+        std::uniform_int_distribution<std::uint64_t> sleepDistribution(1, 3);
 
-    int instructionCount = countDistribution(generator);
-    std::vector<Instruction> instructions;
-    instructions.reserve(instructionCount);
+        const std::uint64_t instructionCount = countDistribution(generator);
+        std::vector<Instruction> instructions;
 
-    instructions.push_back(
-        Instruction::makePrint("Hello world from " + name + "!")
-    );
-
-    for (int i = 1; i < instructionCount; i++) {
-        int operation = operationDistribution(generator);
-
-        std::string destination =
-            "v" + std::to_string(variableDistribution(generator));
-
-        std::string source =
-            "v" + std::to_string(variableDistribution(generator));
-
-        int value = valueDistribution(generator);
-
-        if (operation == 0) {
+        const std::uint64_t greetingCount = std::min<std::uint64_t>(3, instructionCount);
+        for (std::uint64_t index = 0; index < greetingCount; ++index) {
             instructions.push_back(
-                Instruction::makeDeclare(destination, value)
+                Instruction::makePrint("Hello world from " + name + "!")
             );
         }
-        else if (operation == 1) {
-            instructions.push_back(
-                Instruction::makeAdd(
-                    destination,
-                    Operand(source),
-                    Operand(value)
-                )
-            );
-        }
-        else if (operation == 2) {
-            instructions.push_back(
-                Instruction::makeSubtract(
-                    destination,
-                    Operand(source),
-                    Operand(value)
-                )
-            );
-        }
-        else {
-            instructions.push_back(
-                Instruction::makeSleep(sleepDistribution(generator))
-            );
-        }
-    }
 
-    return instructions;
-}
+        for (std::uint64_t index = greetingCount; index < instructionCount; ++index) {
+            const int operation = operationDistribution(generator);
+            const std::string destination =
+                "v" + std::to_string(variableDistribution(generator));
+            const std::string source =
+                "v" + std::to_string(variableDistribution(generator));
+            const int value = valueDistribution(generator);
 
-std::string getProcessStatus(Process::State state) {
-    switch (state) {
-    case Process::READY:
-        return "Ready";
-    case Process::RUNNING:
-        return "Running";
-    case Process::WAITING:
-        return "Waiting";
-    case Process::FINISHED:
-        return "Finished";
-    default:
-        return "Unknown";
-    }
-}
-
-void sortProcesses(
-    std::vector<std::shared_ptr<Process>>& processList
-) {
-    std::sort(
-        processList.begin(),
-        processList.end(),
-        [](const std::shared_ptr<Process>& a,
-            const std::shared_ptr<Process>& b) {
-                return a->getName() < b->getName();
-        }
-    );
-}
-
-void clearCurrentConsoleLine() {
-    HANDLE console = GetStdHandle(STD_OUTPUT_HANDLE);
-    CONSOLE_SCREEN_BUFFER_INFO info;
-
-    if (!GetConsoleScreenBufferInfo(console, &info)) {
-        return;
-    }
-
-    COORD lineStart = { 0, info.dwCursorPosition.Y };
-    DWORD charactersWritten = 0;
-
-    FillConsoleOutputCharacterA(
-        console,
-        ' ',
-        info.dwSize.X,
-        lineStart,
-        &charactersWritten
-    );
-
-    SetConsoleCursorPosition(console, lineStart);
-}
-
-bool readCommand(std::string& command) {
-    command.clear();
-    std::cout << "\n> " << std::flush;
-
-    while (true) {
-        std::vector<std::string> messages = takeQueuedProcessOutput();
-
-        if (!messages.empty()) {
-            clearCurrentConsoleLine();
-
-            for (const std::string& message : messages) {
-                std::cout << message << '\n';
+            if (operation == 0) {
+                instructions.push_back(
+                    Instruction::makeDeclare(destination, value)
+                );
             }
-
-            std::cout << "> " << command << std::flush;
+            else if (operation == 1) {
+                instructions.push_back(
+                    Instruction::makeAdd(destination, Operand(source), Operand(value))
+                );
+            }
+            else if (operation == 2) {
+                instructions.push_back(
+                    Instruction::makeSubtract(destination, Operand(source), Operand(value))
+                );
+            }
+            else {
+                instructions.push_back(
+                    Instruction::makeSleep(sleepDistribution(generator))
+                );
+            }
         }
 
-        if (_kbhit()) {
-            int character = _getch();
+        return instructions;
+    }
 
-            if (character == '\r') {
-                std::cout << '\n';
-                return true;
+    std::string getProcessStatus(Process::State state) {
+        switch (state) {
+        case Process::READY:
+            return "Ready";
+        case Process::RUNNING:
+            return "Running";
+        case Process::WAITING:
+            return "Waiting";
+        case Process::FINISHED:
+            return "Finished";
+        default:
+            return "Unknown";
+        }
+    }
+
+    void sortProcesses(std::vector<std::shared_ptr<Process>>& processes) {
+        std::sort(
+            processes.begin(),
+            processes.end(),
+            [](const std::shared_ptr<Process>& first,
+                const std::shared_ptr<Process>& second) {
+                    return first->getName() < second->getName();
             }
+        );
+    }
 
-            if (character == '\b') {
-                if (!command.empty()) {
-                    command.pop_back();
-                    std::cout << "\b \b" << std::flush;
+    void clearConsole() {
+        std::system("cls");
+    }
+
+    void printMainMenu() {
+        std::cout
+            << "    ______ _____ ____  ____  _____________  __\n"
+            << "   / ____ / ___// __ \\/ __ \\/ ____/ ___/\\ \\/ /\n"
+            << "  / /     \\__ \\/ / / / /_/ / __ / \\__ \\  \\  /\n"
+            << " / /___  ___/ / /_/ / ____/ /___ ___/ /  / /\n"
+            << " \\____/ /____/\\____/_/   /_____//____/  /_/ \n\n"  
+
+            << "Welcome to CSOPESY Emulator!\n\n"
+            << "Developers: \n"
+            << "    Hernaez \n"
+            << "    Liwanag \n"
+            << "    Serrano \n"
+            << "    Tamayo \n\n"
+            << "Last updated: 11-04-2026\n\n"
+            << "Type initialize to begin.\n";
+    }
+
+    bool readCommand(
+        std::string& command,
+        const std::string& prompt,
+        const std::function<void(const std::string&)>& refresh = {}
+    ) {
+        command.clear();
+        std::cout << prompt << std::flush;
+        auto lastRefresh = std::chrono::steady_clock::now();
+
+        while (true) {
+            if (_kbhit()) {
+                const int character = _getch();
+
+                if (character == '\r') {
+                    std::cout << '\n';
+                    return true;
+                }
+
+                if (character == '\b') {
+                    if (!command.empty()) {
+                        command.pop_back();
+                        std::cout << "\b \b" << std::flush;
+                    }
+                }
+                else if (character == 0 || character == 224) {
+                    _getch();
+                }
+                else if (character >= 32 && character <= 126) {
+                    command += static_cast<char>(character);
+                    std::cout << static_cast<char>(character) << std::flush;
                 }
             }
-            else if (character == 0 || character == 224) {
-                _getch();
+
+            const auto now = std::chrono::steady_clock::now();
+            if (refresh
+                && now - lastRefresh >= std::chrono::milliseconds(250)) {
+                refresh(command);
+                lastRefresh = now;
             }
-            else if (character >= 32 && character <= 126) {
-                command += static_cast<char>(character);
-                std::cout << static_cast<char>(character) << std::flush;
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+
+    void renderProcessScreen(
+        const std::shared_ptr<Process>& process,
+        const Scheduler& scheduler,
+        const std::string& command
+    ) {
+        const Process::State state = process->getState();
+        const std::size_t progress = process->getCurrentInstruction();
+        const std::size_t total = process->getInstructionCount();
+        const std::vector<std::string> logs = process->getLogs();
+
+        clearConsole();
+        std::cout << "========== Process Screen ==========\n";
+        std::cout << "Process name: " << process->getName() << '\n';
+        std::cout << "ID: " << process->getPid() << '\n';
+        std::cout << "Status: " << getProcessStatus(state) << '\n';
+        std::cout << "Current instruction line: " << progress << '\n';
+        std::cout << "Lines of code: " << total << '\n';
+        std::cout << "CPU ticks: " << scheduler.getCpuTicks() << '\n';
+        if (state == Process::WAITING) {
+            std::cout << "Sleep ticks remaining: "
+                << process->getRemainingSleepTicks() << '\n';
+        }
+
+        std::cout << "\nLogs:\n";
+        for (const std::string& message : logs) {
+            std::cout << message << '\n';
+        }
+
+        std::cout << "\nCommands: process-smi, exit\n";
+        std::cout << "process> " << command << std::flush;
+    }
+
+    void openProcessScreen(
+        const std::shared_ptr<Process>& process,
+        const Scheduler& scheduler
+    ) {
+        clearConsole();
+        std::string command;
+        Process::State previousState = static_cast<Process::State>(-1);
+        std::size_t previousProgress = static_cast<std::size_t>(-1);
+        std::size_t previousLogCount = static_cast<std::size_t>(-1);
+        std::uint64_t previousTick = std::numeric_limits<std::uint64_t>::max();
+
+        while (true) {
+            const auto refresh = [&](const std::string& currentCommand) {
+                const Process::State state = process->getState();
+                const std::size_t progress = process->getCurrentInstruction();
+                const std::size_t logCount = process->getLogs().size();
+                const std::uint64_t tick = scheduler.getCpuTicks();
+
+                if (state != previousState || progress != previousProgress
+                    || logCount != previousLogCount || tick != previousTick) {
+                    renderProcessScreen(process, scheduler, currentCommand);
+                    previousState = state;
+                    previousProgress = progress;
+                    previousLogCount = logCount;
+                    previousTick = tick;
+                }
+                };
+
+            if (!readCommand(command, "process> ", refresh)) {
+                return;
+            }
+
+            if (command == "exit") {
+                return;
+            }
+            if (command == "process-smi") {
+                previousState = static_cast<Process::State>(-1);
+                refresh("");
+            }
+            else {
+                std::cout << "Unknown process screen command: " << command << '\n';
+                std::this_thread::sleep_for(std::chrono::milliseconds(700));
+                previousState = static_cast<Process::State>(-1);
+                refresh("");
+            }
+        }
+    }
+
+    std::string buildUtilizationReport(
+        const std::vector<std::shared_ptr<Process>>& processList,
+        const Scheduler& scheduler
+    ) {
+        std::ostringstream report;
+        std::size_t runningCount = 0;
+        std::size_t readyCount = 0;
+        std::size_t waitingCount = 0;
+        std::size_t finishedCount = 0;
+
+        for (const std::shared_ptr<Process>& process : processList) {
+            switch (process->getState()) {
+            case Process::RUNNING:
+                ++runningCount;
+                break;
+            case Process::READY:
+                ++readyCount;
+                break;
+            case Process::WAITING:
+                ++waitingCount;
+                break;
+            case Process::FINISHED:
+                ++finishedCount;
+                break;
             }
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        report << std::fixed << std::setprecision(1);
+        report << "CPU utilization: " << scheduler.getCpuUtilization() << "%\n";
+        report << "CPU cores used: " << scheduler.getUsedCoreCount() << '\n';
+        report << "CPU cores available: "
+            << scheduler.getAvailableCoreCount() << '\n';
+        report << "CPU ticks: " << scheduler.getCpuTicks() << "\n\n";
+        report << "Process Name\tPID\tStatus\tInstructions\n";
+
+        for (const std::shared_ptr<Process>& process : processList) {
+            report << process->getName() << '\t'
+                << process->getPid() << '\t'
+                << getProcessStatus(process->getState()) << '\t'
+                << process->getCurrentInstruction() << " / "
+                << process->getInstructionCount() << '\n';
+        }
+
+        report << "\nRunning processes: " << runningCount << '\n';
+        report << "Ready processes: " << readyCount << '\n';
+        report << "Waiting processes: " << waitingCount << '\n';
+        report << "Finished processes: " << finishedCount << '\n';
+        return report.str();
     }
 }
 
 int main() {
     Config config;
     std::unique_ptr<Scheduler> scheduler;
-
     std::unordered_map<std::string, std::shared_ptr<Process>> screens;
     std::mutex screensMutex;
 
-    bool generating = false;
-    std::mutex generatorMutex;
-    std::condition_variable generatorCondition;
+    std::atomic<bool> generating(false);
     std::thread generatorThread;
-
-    int nextProcessNumber = 1;
+    std::uint64_t nextProcessNumber = 1;
     bool initialized = false;
     bool running = true;
 
+    printMainMenu();
+
     std::string command;
-
-    std::cout << "CSOPESY Process Scheduler CLI\n";
-    std::cout << "Type initialize to begin.\n";
-
     while (running) {
-        if (!readCommand(command)) {
+        if (!readCommand(command, "\nCSOPESY> ")) {
             break;
         }
 
         std::istringstream input(command);
         std::string action;
         input >> action;
-
         if (action.empty()) {
             continue;
         }
 
         if (action == "exit") {
             running = false;
+            continue;
         }
-        else if (action == "initialize") {
+
+        if (action == "initialize") {
             if (initialized) {
                 std::cout << "System is already initialized.\n";
                 continue;
@@ -233,322 +354,185 @@ int main() {
 
             scheduler = std::make_unique<Scheduler>(config);
             scheduler->start();
-
             initialized = true;
             std::cout << "System initialized successfully.\n";
+            continue;
         }
-        else if (!initialized) {
-            std::cout
-                << "Please run initialize before using this command.\n";
+
+        if (!initialized) {
+            std::cout << "Please run initialize before using this command.\n";
+            continue;
         }
-        else if (action == "screen") {
+
+        if (action == "screen") {
             std::string option;
             std::string name;
             input >> option >> name;
 
             if (option == "-s") {
                 if (name.empty()) {
-                    std::cout << "Usage: screen -s <name>\n";
+                    std::cout << "Usage: screen -s <process_name>\n";
                     continue;
                 }
 
                 std::shared_ptr<Process> process;
-
                 {
                     std::lock_guard<std::mutex> lock(screensMutex);
-
                     if (screens.find(name) != screens.end()) {
-                        std::cout
-                            << "A process with that name already exists.\n";
+                        std::cout << "A process with that name already exists.\n";
                         continue;
                     }
 
-                    std::vector<Instruction> instructions =
-                        generateInstructions(name, config);
-
                     process = std::make_shared<Process>(
-                        name,
-                        instructions
+                        name, generateInstructions(name, config)
                     );
-
-                    screens[name] = process;
+                    screens.emplace(name, process);
                 }
 
                 scheduler->addProcess(process);
-                std::cout << "Created process screen: " << name << '\n';
+                openProcessScreen(process, *scheduler);
+                clearConsole();
+                printMainMenu();
             }
             else if (option == "-r") {
                 if (name.empty()) {
-                    std::cout << "Usage: screen -r <name>\n";
+                    std::cout << "Usage: screen -r <process_name>\n";
                     continue;
                 }
 
                 std::shared_ptr<Process> process;
-
                 {
                     std::lock_guard<std::mutex> lock(screensMutex);
-                    auto found = screens.find(name);
-
+                    const auto found = screens.find(name);
                     if (found != screens.end()) {
                         process = found->second;
                     }
                 }
 
-                if (!process) {
-                    std::cout << "Process screen not found.\n";
+                if (!process || process->isFinished()) {
+                    std::cout << "Process " << name << " not found.\n";
+                    continue;
                 }
-                else if (process->isFinished()) {
-                    std::cout << "This process has already finished.\n";
-                }
-                else {
-                    std::cout << "Process: "
-                        << process->getName() << '\n';
 
-                    std::cout << "Instructions: "
-                        << process->getCurrentInstruction()
-                        << " / "
-                        << process->getInstructionCount()
-                        << '\n';
-
-                    std::cout << "Status: "
-                        << getProcessStatus(process->getState())
-                        << '\n';
-                }
+                openProcessScreen(process, *scheduler);
+                clearConsole();
+                printMainMenu();
             }
             else if (option == "-ls") {
-                std::vector<std::shared_ptr<Process>> processList;
-
-                {
-                    std::lock_guard<std::mutex> lock(screensMutex);
-
-                    for (const auto& entry : screens) {
-                        processList.push_back(entry.second);
-                    }
-                }
-
+                std::vector<std::shared_ptr<Process>> processList =
+                    scheduler->getProcesses();
                 sortProcesses(processList);
-
-                std::cout
-                    << "Process Name\tStatus\tInstructions\n";
-
-                int runningCount = 0;
-                int finishedCount = 0;
-
-                for (const auto& process : processList) {
-                    Process::State state = process->getState();
-
-                    if (state == Process::FINISHED) {
-                        finishedCount++;
-                    }
-                    else {
-                        runningCount++;
-                    }
-
-                    std::cout
-                        << process->getName() << '\t'
-                        << getProcessStatus(state) << '\t'
-                        << process->getCurrentInstruction()
-                        << " / "
-                        << process->getInstructionCount()
-                        << '\n';
-                }
-
-                std::cout << "\nRunning processes: " << runningCount << '\n';
-                std::cout << "Finished processes: " << finishedCount << '\n';
-
+                std::cout << buildUtilizationReport(processList, *scheduler);
             }
             else {
                 std::cout
-                    << "Usage: screen -s <name>, screen -r <name>, "
-                    << "or screen -ls\n";
+                    << "Usage: screen -s <process_name>, "
+                    << "screen -r <process_name>, or screen -ls\n";
             }
         }
         else if (action == "scheduler-start") {
-            {
-                std::lock_guard<std::mutex> lock(generatorMutex);
-
-                if (generating) {
-                    std::cout
-                        << "Process generation is already running.\n";
-                    continue;
-                }
+            if (generating.exchange(true)) {
+                std::cout << "Process generation is already running.\n";
+                continue;
             }
 
             if (generatorThread.joinable()) {
                 generatorThread.join();
             }
 
-            {
-                std::lock_guard<std::mutex> lock(generatorMutex);
-                generating = true;
-            }
-
             generatorThread = std::thread([&]() {
-                while (true) {
-                    std::unique_lock<std::mutex> lock(generatorMutex);
+                std::uint64_t nextTick =
+                    scheduler->getCpuTicks() + config.batchProcessFreq;
 
-                    bool stopped = generatorCondition.wait_for(
-                        lock,
-                        std::chrono::seconds(
-                            config.batchProcessFreq < 1
-                            ? 1
-                            : config.batchProcessFreq
-                        ),
-                        [&]() {
-                            return !generating;
-                        }
-                    );
-
-                    if (stopped || !generating) {
+                while (scheduler->waitForCpuTicks(nextTick, generating)) {
+                    if (!generating) {
                         break;
                     }
 
-                    int processNumber = nextProcessNumber++;
-
-                    std::string name = "p";
-
-                    if (processNumber < 10) {
-                        name += "0";
-                    }
-
-                    name += std::to_string(processNumber);
-
-                    lock.unlock();
-
-                    std::vector<Instruction> instructions =
-                        generateInstructions(name, config);
-
+                    const std::uint64_t processNumber = nextProcessNumber++;
+                    std::ostringstream processName;
+                    processName << 'p' << std::setw(2) << std::setfill('0')
+                        << processNumber;
+                    std::string name = processName.str();
                     auto process = std::make_shared<Process>(
-                        name,
-                        instructions
+                        name, generateInstructions(name, config)
                     );
-
-                    lock.lock();
 
                     if (!generating) {
                         break;
                     }
 
                     {
-                        std::lock_guard<std::mutex> screensLock(screensMutex);
-
+                        std::lock_guard<std::mutex> lock(screensMutex);
                         while (screens.find(name) != screens.end()) {
-                            processNumber = nextProcessNumber++;
-
-                            name = "p";
-
-                            if (processNumber < 10) {
-                                name += "0";
-                            }
-
-                            name += std::to_string(processNumber);
-
-                            instructions = generateInstructions(name, config);
-
+                            processName.str(std::string());
+                            processName.clear();
+                            processName << 'p' << std::setw(2)
+                                << std::setfill('0') << nextProcessNumber++;
+                            name = processName.str();
                             process = std::make_shared<Process>(
-                                name,
-                                instructions
+                                name, generateInstructions(name, config)
                             );
                         }
-
-                        screens[name] = process;
+                        screens.emplace(name, process);
                     }
 
                     scheduler->addProcess(process);
+                    nextTick += config.batchProcessFreq;
                 }
                 });
 
             std::cout << "Automatic process generation started.\n";
         }
         else if (action == "scheduler-stop") {
-            {
-                std::lock_guard<std::mutex> lock(generatorMutex);
-                generating = false;
+            if (!generating.exchange(false)) {
+                std::cout << "Automatic process generation is not running.\n";
+                continue;
             }
 
-            generatorCondition.notify_all();
-
+            scheduler->notifyTickWaiters();
             if (generatorThread.joinable()) {
                 generatorThread.join();
             }
-
             std::cout << "Automatic process generation stopped.\n";
         }
         else if (action == "report-util") {
-            std::vector<std::shared_ptr<Process>> processList;
-
-            {
-                std::lock_guard<std::mutex> lock(screensMutex);
-
-                for (const auto& entry : screens) {
-                    processList.push_back(entry.second);
-                }
-            }
-
+            std::vector<std::shared_ptr<Process>> processList =
+                scheduler->getProcesses();
             sortProcesses(processList);
+            const std::string report =
+                buildUtilizationReport(processList, *scheduler);
+            std::ofstream output("csopesy-log.txt");
 
-            std::ofstream report("csopesy-log.txt");
-
-            if (!report.is_open()) {
+            if (!output.is_open()) {
                 std::cout << "Could not create csopesy-log.txt.\n";
                 continue;
             }
 
-            report << "Process Name\tStatus\tInstructions\n";
-
-            int runningCount = 0;
-            int finishedCount = 0;
-
-            for (const auto& process : processList) {
-                Process::State state = process->getState();
-
-                if (state == Process::FINISHED) {
-                    finishedCount++;
-                }
-                else {
-                    runningCount++;
-                }
-
-                report
-                    << process->getName() << '\t'
-                    << getProcessStatus(state) << '\t'
-                    << process->getCurrentInstruction()
-                    << " / "
-                    << process->getInstructionCount()
-                    << '\n';
+            output << report;
+            if (!output) {
+                std::cout << "Could not write csopesy-log.txt.\n";
+                continue;
             }
 
-            report << "\nRunning processes: " << runningCount << '\n';
-            report << "Finished processes: " << finishedCount << '\n';
-
-            report.close();
+            std::cout << report;
             std::cout << "Saved report to csopesy-log.txt.\n";
         }
         else {
             std::cout << "Unknown command: " << action << '\n';
         }
-
-        displayQueuedProcessOutput();
     }
 
-    {
-        std::lock_guard<std::mutex> lock(generatorMutex);
-        generating = false;
+    if (generating.exchange(false)) {
+        scheduler->notifyTickWaiters();
     }
-
-    generatorCondition.notify_all();
-
     if (generatorThread.joinable()) {
         generatorThread.join();
     }
-
     if (scheduler) {
         scheduler->stop();
     }
 
-    displayQueuedProcessOutput();
-
     std::cout << "Exiting CSOPESY CLI.\n";
-
     return 0;
 }
