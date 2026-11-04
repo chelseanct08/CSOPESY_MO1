@@ -16,7 +16,7 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
-#include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -36,49 +36,40 @@ namespace {
         std::uniform_int_distribution<std::uint64_t> countDistribution(
             config.minIns, config.maxIns
         );
-        std::uniform_int_distribution<int> operationDistribution(0, 3);
-        std::uniform_int_distribution<int> variableDistribution(1, 5);
-        std::uniform_int_distribution<int> valueDistribution(0, 100);
-        std::uniform_int_distribution<std::uint64_t> sleepDistribution(1, 3);
 
         const std::uint64_t instructionCount = countDistribution(generator);
         std::vector<Instruction> instructions;
 
-        const std::uint64_t greetingCount = std::min<std::uint64_t>(3, instructionCount);
+        // The greetings and required FOR sequence establish a 603-line minimum.
+        constexpr std::uint64_t greetingCount = 3;
+        constexpr std::uint64_t requiredForInstructionCount = 603;
         for (std::uint64_t index = 0; index < greetingCount; ++index) {
             instructions.push_back(
                 Instruction::makePrint("Hello world from " + name + "!")
             );
         }
 
-        for (std::uint64_t index = greetingCount; index < instructionCount; ++index) {
-            const int operation = operationDistribution(generator);
-            const std::string destination =
-                "v" + std::to_string(variableDistribution(generator));
-            const std::string source =
-                "v" + std::to_string(variableDistribution(generator));
-            const int value = valueDistribution(generator);
+        std::vector<Instruction> loopBody = {
+            Instruction::makeAdd("x", Operand("x"), Operand(1)),
+            Instruction::makePrintVariable("Value from: ", "x"),
+            Instruction::makeAdd("y", Operand("y"), Operand(1)),
+            Instruction::makePrintVariable("Value from: ", "y"),
+            Instruction::makeAdd("z", Operand("z"), Operand(1)),
+            Instruction::makePrintVariable("Value from: ", "z")
+        };
+        instructions.push_back(Instruction::makeFor(loopBody, 100));
 
-            if (operation == 0) {
-                instructions.push_back(
-                    Instruction::makeDeclare(destination, value)
-                );
-            }
-            else if (operation == 1) {
-                instructions.push_back(
-                    Instruction::makeAdd(destination, Operand(source), Operand(value))
-                );
-            }
-            else if (operation == 2) {
-                instructions.push_back(
-                    Instruction::makeSubtract(destination, Operand(source), Operand(value))
-                );
-            }
-            else {
-                instructions.push_back(
-                    Instruction::makeSleep(sleepDistribution(generator))
-                );
-            }
+        const std::uint64_t paddingCount =
+            instructionCount > requiredForInstructionCount
+            ? instructionCount - requiredForInstructionCount
+            : 0;
+        if (paddingCount > 0) {
+            instructions.push_back(
+                Instruction::makeFor(
+                    { Instruction::makeSleep(0) },
+                    paddingCount
+                )
+            );
         }
 
         return instructions;
@@ -120,7 +111,7 @@ namespace {
             << "   / ____ / ___// __ \\/ __ \\/ ____/ ___/\\ \\/ /\n"
             << "  / /     \\__ \\/ / / / /_/ / __ / \\__ \\  \\  /\n"
             << " / /___  ___/ / /_/ / ____/ /___ ___/ /  / /\n"
-            << " \\____/ /____/\\____/_/   /_____//____/  /_/ \n\n"  
+            << " \\____/ /____/\\____/_/   /_____//____/  /_/ \n\n"
 
             << "Welcome to CSOPESY Emulator!\n\n"
             << "Developers: \n"
@@ -131,6 +122,7 @@ namespace {
             << "Last updated: 11-04-2026\n\n"
             << "Type initialize to begin.\n";
     }
+
 
     bool readCommand(
         std::string& command,
@@ -167,7 +159,7 @@ namespace {
 
             const auto now = std::chrono::steady_clock::now();
             if (refresh
-                && now - lastRefresh >= std::chrono::milliseconds(250)) {
+                && now - lastRefresh >= std::chrono::milliseconds(100)) {
                 refresh(command);
                 lastRefresh = now;
             }
@@ -176,10 +168,13 @@ namespace {
         }
     }
 
+    void printProcessInformation(const std::shared_ptr<Process>& process);
+
     void renderProcessScreen(
         const std::shared_ptr<Process>& process,
-        const Scheduler& scheduler,
-        const std::string& command
+        const std::string& command,
+        bool showProcessInformation,
+        bool showPrompt = false
     ) {
         const Process::State state = process->getState();
         const std::size_t progress = process->getCurrentInstruction();
@@ -191,48 +186,70 @@ namespace {
         std::cout << "Process name: " << process->getName() << '\n';
         std::cout << "ID: " << process->getPid() << '\n';
         std::cout << "Status: " << getProcessStatus(state) << '\n';
-        std::cout << "Current instruction line: " << progress << '\n';
-        std::cout << "Lines of code: " << total << '\n';
-        std::cout << "CPU ticks: " << scheduler.getCpuTicks() << '\n';
-        if (state == Process::WAITING) {
-            std::cout << "Sleep ticks remaining: "
-                << process->getRemainingSleepTicks() << '\n';
-        }
-
         std::cout << "\nLogs:\n";
         for (const std::string& message : logs) {
             std::cout << message << '\n';
         }
 
+        std::cout << "\nCurrent instruction line: " << progress << '\n';
+        std::cout << "Lines of code: " << total << '\n';
+        if (showProcessInformation) {
+            printProcessInformation(process);
+        }
+
         std::cout << "\nCommands: process-smi, exit\n";
-        std::cout << "process> " << command << std::flush;
+        if (showPrompt) {
+            std::cout << "process> " << command << std::flush;
+        }
     }
 
-    void openProcessScreen(
-        const std::shared_ptr<Process>& process,
-        const Scheduler& scheduler
-    ) {
+    void printProcessInformation(const std::shared_ptr<Process>& process) {
+        std::cout << "\n========== PROCESS INFORMATION ==========\n";
+        std::cout << "Process name: " << process->getName() << '\n';
+        std::cout << "PID: " << process->getPid() << '\n';
+        std::cout << "Status: " << getProcessStatus(process->getState()) << '\n';
+        std::cout << "Current instruction: "
+            << process->getCurrentInstruction() << '\n';
+        std::cout << "Total instructions: "
+            << process->getInstructionCount() << '\n';
+
+        std::map<std::string, std::uint16_t> variables;
+        for (const auto& variable : process->getVariables()) {
+            variables.emplace(variable.first, variable.second);
+        }
+
+        std::cout << "Variables:\n";
+        for (const auto& variable : variables) {
+            std::cout << variable.first << " = " << variable.second << '\n';
+        }
+    }
+
+    void openProcessScreen(const std::shared_ptr<Process>& process) {
         clearConsole();
         std::string command;
-        Process::State previousState = static_cast<Process::State>(-1);
-        std::size_t previousProgress = static_cast<std::size_t>(-1);
-        std::size_t previousLogCount = static_cast<std::size_t>(-1);
-        std::uint64_t previousTick = std::numeric_limits<std::uint64_t>::max();
+        bool showProcessInformation = false;
+        renderProcessScreen(process, command, showProcessInformation);
+        Process::State previousState = process->getState();
+        std::size_t previousProgress = process->getCurrentInstruction();
+        std::size_t previousLogCount = process->getLogs().size();
 
         while (true) {
             const auto refresh = [&](const std::string& currentCommand) {
                 const Process::State state = process->getState();
                 const std::size_t progress = process->getCurrentInstruction();
                 const std::size_t logCount = process->getLogs().size();
-                const std::uint64_t tick = scheduler.getCpuTicks();
 
                 if (state != previousState || progress != previousProgress
-                    || logCount != previousLogCount || tick != previousTick) {
-                    renderProcessScreen(process, scheduler, currentCommand);
+                    || logCount != previousLogCount) {
+                    renderProcessScreen(
+                        process,
+                        currentCommand,
+                        showProcessInformation,
+                        true
+                    );
                     previousState = state;
                     previousProgress = progress;
                     previousLogCount = logCount;
-                    previousTick = tick;
                 }
                 };
 
@@ -244,14 +261,15 @@ namespace {
                 return;
             }
             if (command == "process-smi") {
-                previousState = static_cast<Process::State>(-1);
-                refresh("");
+                showProcessInformation = true;
+                renderProcessScreen(process, "", showProcessInformation);
+                previousState = process->getState();
+                previousProgress = process->getCurrentInstruction();
+                previousLogCount = process->getLogs().size();
             }
             else {
                 std::cout << "Unknown process screen command: " << command << '\n';
                 std::this_thread::sleep_for(std::chrono::milliseconds(700));
-                previousState = static_cast<Process::State>(-1);
-                refresh("");
             }
         }
     }
@@ -390,7 +408,7 @@ int main() {
                 }
 
                 scheduler->addProcess(process);
-                openProcessScreen(process, *scheduler);
+                openProcessScreen(process);
                 clearConsole();
                 printMainMenu();
             }
@@ -414,7 +432,7 @@ int main() {
                     continue;
                 }
 
-                openProcessScreen(process, *scheduler);
+                openProcessScreen(process);
                 clearConsole();
                 printMainMenu();
             }
