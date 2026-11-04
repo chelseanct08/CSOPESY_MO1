@@ -1,47 +1,22 @@
-
 #include "Process.h"
 
 #include <algorithm>
-#include <iostream>
+#include <atomic>
+#include <limits>
 
 namespace {
-    std::deque<std::string> outputQueue;
-    std::mutex outputQueueMutex;
-}
-
-void queueProcessOutput(const std::string& message) {
-    std::lock_guard<std::mutex> lock(outputQueueMutex);
-    outputQueue.push_back(message);
-}
-
-std::vector<std::string> takeQueuedProcessOutput() {
-    std::deque<std::string> messages;
-
-    {
-        std::lock_guard<std::mutex> lock(outputQueueMutex);
-        messages.swap(outputQueue);
-    }
-
-    return std::vector<std::string>(messages.begin(), messages.end());
-}
-
-void displayQueuedProcessOutput() {
-    std::vector<std::string> messages = takeQueuedProcessOutput();
-
-    for (const std::string& message : messages) {
-        std::cout << message << '\n';
-    }
+    std::atomic<std::uint64_t> nextProcessId{ 0 };
 }
 
 Operand::Operand() {
     isVariable = false;
-    variableName = "";
+    variableName.clear();
     value = 0;
 }
 
 Operand::Operand(int value) {
     isVariable = false;
-    variableName = "";
+    variableName.clear();
     this->value = value;
 }
 
@@ -53,9 +28,10 @@ Operand::Operand(const std::string& variableName) {
 
 Instruction::Instruction() {
     type = PRINT;
-    text = "";
-    variable = "";
+    text.clear();
+    variable.clear();
     value = 0;
+    sleepTicks = 0;
     repeatCount = 0;
 }
 
@@ -100,10 +76,10 @@ Instruction Instruction::makeSubtract(
     return instruction;
 }
 
-Instruction Instruction::makeSleep(int ticks) {
+Instruction Instruction::makeSleep(std::uint64_t ticks) {
     Instruction instruction;
     instruction.type = SLEEP;
-    instruction.value = ticks;
+    instruction.sleepTicks = ticks;
     return instruction;
 }
 
@@ -121,13 +97,12 @@ Instruction Instruction::makeFor(
 Process::Process(
     const std::string& name,
     const std::vector<Instruction>& instructions
-) {
-    this->name = name;
-    state = READY;
-    instructionIndex = 0;
-    remainingSleepTicks = 0;
-
-    expandInstructions(instructions, 0);
+) : name(name),
+pid(nextProcessId.fetch_add(1)),
+state(READY),
+instructionIndex(0),
+remainingSleepTicks(0) {
+    expandInstructions(instructions);
 
     if (this->instructions.empty()) {
         state = FINISHED;
@@ -135,29 +110,30 @@ Process::Process(
 }
 
 void Process::expandInstructions(
-    const std::vector<Instruction>& source,
-    int depth
+    const std::vector<Instruction>& source
 ) {
     for (const Instruction& instruction : source) {
-        if (instruction.type == Instruction::FOR) {
-            if (depth >= 3) {
-                continue;
-            }
-
-            int repeats = std::max(0, instruction.repeatCount);
-
-            for (int i = 0; i < repeats; i++) {
-                expandInstructions(instruction.body, depth + 1);
-            }
-        }
-        else {
+        if (instruction.type != Instruction::FOR) {
             instructions.push_back(instruction);
+            continue;
+        }
+
+        if (instruction.repeatCount <= 0) {
+            continue;
+        }
+
+        for (int repeat = 0; repeat < instruction.repeatCount; ++repeat) {
+            expandInstructions(instruction.body);
         }
     }
 }
 
 const std::string& Process::getName() const {
     return name;
+}
+
+std::uint64_t Process::getPid() const {
+    return pid;
 }
 
 Process::State Process::getState() const {
@@ -175,43 +151,49 @@ bool Process::isFinished() const {
     return state == FINISHED;
 }
 
-int Process::getInstructionCount() const {
+std::size_t Process::getInstructionCount() const {
     std::lock_guard<std::mutex> lock(processMutex);
-    return static_cast<int>(instructions.size());
+    return instructions.size();
 }
 
-int Process::getCurrentInstruction() const {
+std::size_t Process::getCurrentInstruction() const {
     std::lock_guard<std::mutex> lock(processMutex);
     return instructionIndex;
 }
 
-int Process::getRemainingSleepTicks() const {
+std::uint64_t Process::getRemainingSleepTicks() const {
     std::lock_guard<std::mutex> lock(processMutex);
     return remainingSleepTicks;
 }
 
-uint16_t Process::clampValue(int value) {
+std::vector<std::string> Process::getLogs() const {
+    std::lock_guard<std::mutex> lock(processMutex);
+    return logs;
+}
+
+std::uint16_t Process::clampValue(int value) {
     if (value < 0) {
         return 0;
     }
 
-    if (value > 65535) {
-        return 65535;
+    if (value > std::numeric_limits<std::uint16_t>::max()) {
+        return std::numeric_limits<std::uint16_t>::max();
     }
 
-    return static_cast<uint16_t>(value);
+    return static_cast<std::uint16_t>(value);
 }
 
 int Process::getOperandValue(const Operand& operand) {
     if (!operand.isVariable) {
-        return operand.value;
+        return clampValue(operand.value);
     }
 
-    if (variables.find(operand.variableName) == variables.end()) {
-        variables[operand.variableName] = 0;
+    const auto found = variables.find(operand.variableName);
+    if (found == variables.end()) {
+        return variables.emplace(operand.variableName, 0).first->second;
     }
 
-    return variables[operand.variableName];
+    return found->second;
 }
 
 void Process::executeNextInstruction() {
@@ -221,79 +203,76 @@ void Process::executeNextInstruction() {
         return;
     }
 
-    if (instructionIndex >= static_cast<int>(instructions.size())) {
+    if (instructionIndex >= instructions.size()) {
         state = FINISHED;
         return;
     }
 
     state = RUNNING;
-
     const Instruction& instruction = instructions[instructionIndex];
 
     switch (instruction.type) {
     case Instruction::PRINT:
-        queueProcessOutput(instruction.text);
-        instructionIndex++;
+        logs.push_back(instruction.text);
+        ++instructionIndex;
         break;
 
     case Instruction::DECLARE:
         variables[instruction.variable] = clampValue(instruction.value);
-        instructionIndex++;
+        ++instructionIndex;
         break;
 
     case Instruction::ADD: {
-        int first = getOperandValue(instruction.operand1);
-        int second = getOperandValue(instruction.operand2);
-
+        const int first = getOperandValue(instruction.operand1);
+        const int second = getOperandValue(instruction.operand2);
         variables[instruction.variable] = clampValue(first + second);
-        instructionIndex++;
+        ++instructionIndex;
         break;
     }
 
     case Instruction::SUBTRACT: {
-        int first = getOperandValue(instruction.operand1);
-        int second = getOperandValue(instruction.operand2);
-
+        const int first = getOperandValue(instruction.operand1);
+        const int second = getOperandValue(instruction.operand2);
         variables[instruction.variable] = clampValue(first - second);
-        instructionIndex++;
+        ++instructionIndex;
         break;
     }
 
     case Instruction::SLEEP:
-        instructionIndex++;
-        remainingSleepTicks = std::max(0, instruction.value);
-
+        ++instructionIndex;
+        remainingSleepTicks = instruction.sleepTicks;
         if (remainingSleepTicks > 0) {
             state = WAITING;
         }
         break;
 
     case Instruction::FOR:
-        instructionIndex++;
+        ++instructionIndex;
         break;
     }
 
-    if (instructionIndex >= static_cast<int>(instructions.size())
-        && state != WAITING) {
+    if (instructionIndex >= instructions.size() && state != WAITING) {
         state = FINISHED;
     }
 }
 
-void Process::tickSleep() {
+bool Process::tickSleep() {
     std::lock_guard<std::mutex> lock(processMutex);
 
-    if (state != WAITING || remainingSleepTicks <= 0) {
-        return;
+    if (state != WAITING || remainingSleepTicks == 0) {
+        return false;
     }
 
-    remainingSleepTicks--;
-
-    if (remainingSleepTicks == 0) {
-        if (instructionIndex >= static_cast<int>(instructions.size())) {
-            state = FINISHED;
-        }
-        else {
-            state = READY;
-        }
+    --remainingSleepTicks;
+    if (remainingSleepTicks != 0) {
+        return false;
     }
+
+    if (instructionIndex >= instructions.size()) {
+        state = FINISHED;
+        return false;
+    }
+
+    state = READY;
+    return true;
 }
