@@ -30,6 +30,7 @@ Instruction::Instruction() {
     type = PRINT;
     text.clear();
     variable.clear();
+    printVariable.clear();
     value = 0;
     sleepTicks = 0;
     repeatCount = 0;
@@ -39,6 +40,17 @@ Instruction Instruction::makePrint(const std::string& message) {
     Instruction instruction;
     instruction.type = PRINT;
     instruction.text = message;
+    return instruction;
+}
+
+Instruction Instruction::makePrintVariable(
+    const std::string& prefix,
+    const std::string& variable
+) {
+    Instruction instruction;
+    instruction.type = PRINT;
+    instruction.text = prefix;
+    instruction.printVariable = variable;
     return instruction;
 }
 
@@ -85,7 +97,7 @@ Instruction Instruction::makeSleep(std::uint64_t ticks) {
 
 Instruction Instruction::makeFor(
     const std::vector<Instruction>& instructions,
-    int repeats
+    std::uint64_t repeats
 ) {
     Instruction instruction;
     instruction.type = FOR;
@@ -101,31 +113,88 @@ Process::Process(
 pid(nextProcessId.fetch_add(1)),
 state(READY),
 instructionIndex(0),
+instructionCount(0),
 remainingSleepTicks(0) {
-    expandInstructions(instructions);
+    variables.emplace("x", 0);
+    variables.emplace("y", 0);
+    variables.emplace("z", 0);
+    this->instructions = instructions;
+    instructionCount = countExecutableInstructions(this->instructions);
+    if (!this->instructions.empty()) {
+        executionStack.push_back({ &this->instructions, 0, 1 });
+    }
 
-    if (this->instructions.empty()) {
+    if (instructionCount == 0) {
         state = FINISHED;
     }
 }
 
-void Process::expandInstructions(
-    const std::vector<Instruction>& source
-) {
-    for (const Instruction& instruction : source) {
+const Instruction* Process::nextExecutableInstruction() {
+    while (!executionStack.empty()) {
+        ExecutionFrame& frame = executionStack.back();
+
+        if (frame.nextIndex >= frame.body->size()) {
+            if (frame.repeatsRemaining > 1) {
+                --frame.repeatsRemaining;
+                frame.nextIndex = 0;
+            }
+            else {
+                executionStack.pop_back();
+            }
+            continue;
+        }
+
+        const Instruction& instruction = (*frame.body)[frame.nextIndex++];
         if (instruction.type != Instruction::FOR) {
-            instructions.push_back(instruction);
-            continue;
+            return &instruction;
         }
 
-        if (instruction.repeatCount <= 0) {
-            continue;
-        }
-
-        for (int repeat = 0; repeat < instruction.repeatCount; ++repeat) {
-            expandInstructions(instruction.body);
+        if (instruction.repeatCount > 0 && !instruction.body.empty()) {
+            executionStack.push_back({
+                &instruction.body,
+                0,
+                instruction.repeatCount
+                });
         }
     }
+
+    return nullptr;
+}
+
+std::size_t Process::countExecutableInstructions(
+    const std::vector<Instruction>& source
+) {
+    std::size_t count = 0;
+
+    for (const Instruction& instruction : source) {
+        std::size_t amount = 1;
+        if (instruction.type == Instruction::FOR) {
+            amount = 0;
+            if (instruction.repeatCount > 0) {
+                const std::size_t bodyCount =
+                    countExecutableInstructions(instruction.body);
+                if (bodyCount != 0
+                    && instruction.repeatCount
+                        > (static_cast<std::uint64_t>(
+                            static_cast<std::size_t>(-1)
+                            ) / bodyCount)) {
+                    amount = static_cast<std::size_t>(-1);
+                }
+                else {
+                    amount = bodyCount
+                        * static_cast<std::size_t>(instruction.repeatCount);
+                }
+            }
+        }
+
+        if (amount > static_cast<std::size_t>(-1) - count) {
+            return static_cast<std::size_t>(-1);
+        }
+
+        count += amount;
+    }
+
+    return count;
 }
 
 const std::string& Process::getName() const {
@@ -153,7 +222,7 @@ bool Process::isFinished() const {
 
 std::size_t Process::getInstructionCount() const {
     std::lock_guard<std::mutex> lock(processMutex);
-    return instructions.size();
+    return instructionCount;
 }
 
 std::size_t Process::getCurrentInstruction() const {
@@ -171,7 +240,12 @@ std::vector<std::string> Process::getLogs() const {
     return logs;
 }
 
-std::uint16_t Process::clampValue(int value) {
+std::unordered_map<std::string, std::uint16_t> Process::getVariables() const {
+    std::lock_guard<std::mutex> lock(processMutex);
+    return variables;
+}
+
+std::uint16_t Process::clampValue(std::int64_t value) {
     if (value < 0) {
         return 0;
     }
@@ -183,7 +257,7 @@ std::uint16_t Process::clampValue(int value) {
     return static_cast<std::uint16_t>(value);
 }
 
-int Process::getOperandValue(const Operand& operand) {
+std::int64_t Process::getOperandValue(const Operand& operand) {
     if (!operand.isVariable) {
         return clampValue(operand.value);
     }
@@ -203,43 +277,49 @@ void Process::executeNextInstruction() {
         return;
     }
 
-    if (instructionIndex >= instructions.size()) {
+    const Instruction* nextInstruction = nextExecutableInstruction();
+    if (nextInstruction == nullptr) {
         state = FINISHED;
         return;
     }
 
     state = RUNNING;
-    const Instruction& instruction = instructions[instructionIndex];
+    const Instruction& instruction = *nextInstruction;
 
     switch (instruction.type) {
     case Instruction::PRINT:
-        logs.push_back(instruction.text);
-        ++instructionIndex;
+        if (instruction.printVariable.empty()) {
+            logs.push_back(instruction.text);
+        }
+        else {
+            logs.push_back(
+                instruction.text
+                + std::to_string(getOperandValue(
+                    Operand(instruction.printVariable)
+                ))
+            );
+        }
         break;
 
     case Instruction::DECLARE:
         variables[instruction.variable] = clampValue(instruction.value);
-        ++instructionIndex;
         break;
 
     case Instruction::ADD: {
-        const int first = getOperandValue(instruction.operand1);
-        const int second = getOperandValue(instruction.operand2);
+        const std::int64_t first = getOperandValue(instruction.operand1);
+        const std::int64_t second = getOperandValue(instruction.operand2);
         variables[instruction.variable] = clampValue(first + second);
-        ++instructionIndex;
         break;
     }
 
     case Instruction::SUBTRACT: {
-        const int first = getOperandValue(instruction.operand1);
-        const int second = getOperandValue(instruction.operand2);
+        const std::int64_t first = getOperandValue(instruction.operand1);
+        const std::int64_t second = getOperandValue(instruction.operand2);
         variables[instruction.variable] = clampValue(first - second);
-        ++instructionIndex;
         break;
     }
 
     case Instruction::SLEEP:
-        ++instructionIndex;
         remainingSleepTicks = instruction.sleepTicks;
         if (remainingSleepTicks > 0) {
             state = WAITING;
@@ -247,11 +327,11 @@ void Process::executeNextInstruction() {
         break;
 
     case Instruction::FOR:
-        ++instructionIndex;
         break;
     }
 
-    if (instructionIndex >= instructions.size() && state != WAITING) {
+    ++instructionIndex;
+    if (instructionIndex >= instructionCount && state != WAITING) {
         state = FINISHED;
     }
 }
@@ -268,7 +348,7 @@ bool Process::tickSleep() {
         return false;
     }
 
-    if (instructionIndex >= instructions.size()) {
+    if (instructionIndex >= instructionCount) {
         state = FINISHED;
         return false;
     }
