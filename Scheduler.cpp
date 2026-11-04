@@ -195,11 +195,6 @@ void Scheduler::workerFunction() {
                 break;
             }
 
-            if (config.scheduler == "rr"
-                && executedTicks >= config.quantumCycles) {
-                break;
-            }
-
             if (config.delaysPerExec > 0) {
                 std::unique_lock<std::mutex> lock(tickMutex);
                 tickCondition.wait_for(
@@ -209,6 +204,11 @@ void Scheduler::workerFunction() {
                         return !running.load();
                     }
                 );
+            }
+
+            if (config.scheduler == "rr"
+                && executedTicks >= config.quantumCycles) {
+                break;
             }
         }
 
@@ -227,3 +227,4 @@ void Scheduler::workerFunction() {
         }
     }
 }
+
