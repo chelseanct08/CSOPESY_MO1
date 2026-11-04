@@ -1,9 +1,36 @@
 #include "Config.h"
+
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <sstream>
 #include <unordered_map>
-#include <stdexcept>
+
+namespace {
+    const std::uint64_t maximumSetting = UINT64_C(1) << 32;
+
+    bool parseUnsigned(
+        const std::string& text,
+        std::uint64_t& value
+    ) {
+        if (text.empty()) {
+            return false;
+        }
+
+        std::size_t parsedLength = 0;
+
+        try {
+            value = std::stoull(text, &parsedLength, 10);
+        }
+        catch (const std::exception&) {
+            return false;
+        }
+
+        return parsedLength == text.size()
+            && text.front() != '-'
+            && value <= maximumSetting;
+    }
+}
 
 Config::Config() {
     numCpu = 4;
@@ -25,97 +52,166 @@ bool Config::loadConfig(const std::string& filename) {
 
     std::unordered_map<std::string, std::string> settings;
     std::string line;
+    std::size_t lineNumber = 0;
 
     while (std::getline(file, line)) {
+        ++lineNumber;
         std::istringstream input(line);
         std::string key;
         std::string value;
 
-        if (!(input >> key)) {
-            continue;
-        }
-
-        if (key[0] == '#') {
+        if (!(input >> key) || key.front() == '#') {
             continue;
         }
 
         if (!(input >> value)) {
-            std::cout << "Error: Missing value for " << key << ".\n";
+            std::cout << "Error: Missing value on config.txt line "
+                << lineNumber << ".\n";
             return false;
         }
 
         std::string extra;
 
-        if (input >> extra && extra[0] != '#') {
-            std::cout << "Error: Too many values for " << key << ".\n";
+        if (input >> extra && extra.front() != '#') {
+            std::cout << "Error: Too many values on config.txt line "
+                << lineNumber << ".\n";
             return false;
         }
 
-        settings[key] = value;
+        if (!settings.emplace(key, value).second) {
+            std::cout << "Error: Duplicate setting " << key << ".\n";
+            return false;
+        }
     }
 
-    file.close();
-
-    const std::string requiredKeys[] = {
+    const char* acceptedKeys[] = {
         "num-cpu",
         "scheduler",
         "quantum-cycles",
         "batch-process-freq",
         "min-ins",
         "max-ins",
+        "delay-per-exec",
         "delays-per-exec"
     };
 
-    for (const std::string& key : requiredKeys) {
+    for (const auto& setting : settings) {
+        bool recognized = false;
+        for (const char* key : acceptedKeys) {
+            if (setting.first == key) {
+                recognized = true;
+                break;
+            }
+        }
+
+        if (!recognized) {
+            std::cout << "Error: Unsupported setting "
+                << setting.first << ".\n";
+            return false;
+        }
+    }
+
+    const char* requiredKeys[] = {
+        "num-cpu",
+        "scheduler",
+        "quantum-cycles",
+        "batch-process-freq",
+        "min-ins",
+        "max-ins"
+    };
+
+    for (const char* key : requiredKeys) {
         if (settings.find(key) == settings.end()) {
             std::cout << "Error: Missing setting " << key << ".\n";
             return false;
         }
     }
 
-    try {
-        numCpu = std::stoi(settings["num-cpu"]);
-        scheduler = settings["scheduler"];
-        quantumCycles = std::stoi(settings["quantum-cycles"]);
-        batchProcessFreq = std::stoi(settings["batch-process-freq"]);
-        minIns = std::stoi(settings["min-ins"]);
-        maxIns = std::stoi(settings["max-ins"]);
-        delaysPerExec = std::stoi(settings["delays-per-exec"]);
-    }
-    catch (const std::exception&) {
-        std::cout << "Error: A configuration value is not a valid integer.\n";
+    const bool hasDelayPerExec =
+        settings.find("delay-per-exec") != settings.end();
+    const bool hasDelaysPerExec =
+        settings.find("delays-per-exec") != settings.end();
+
+    if (!hasDelayPerExec && !hasDelaysPerExec) {
+        std::cout << "Error: Missing setting delay-per-exec "
+            << "(or delays-per-exec).\n";
         return false;
     }
 
-    if (numCpu < 1 || numCpu > 128) {
-        std::cout << "Error: num-cpu must be between 1 and 128.\n";
-        return false;
-    }
+    std::uint64_t parsedNumCpu = 0;
+    std::uint64_t parsedQuantum = 0;
+    std::uint64_t parsedBatchFrequency = 0;
+    std::uint64_t parsedMinIns = 0;
+    std::uint64_t parsedMaxIns = 0;
+    std::uint64_t parsedDelay = 0;
 
-    if (scheduler != "fcfs" && scheduler != "rr") {
+    const std::string parsedScheduler = settings["scheduler"];
+    if (parsedScheduler != "fcfs" && parsedScheduler != "rr") {
         std::cout << "Error: scheduler must be fcfs or rr.\n";
         return false;
     }
 
-    if (quantumCycles < 1) {
-        std::cout << "Error: quantum-cycles must be at least 1.\n";
+    if (!parseUnsigned(settings["num-cpu"], parsedNumCpu)
+        || parsedNumCpu < 1 || parsedNumCpu > 128) {
+        std::cout << "Error: num-cpu must be between 1 and 128.\n";
         return false;
     }
 
-    if (batchProcessFreq < 1) {
-        std::cout << "Error: batch-process-freq must be at least 1.\n";
+    if (!parseUnsigned(settings["quantum-cycles"], parsedQuantum)
+        || parsedQuantum < 1) {
+        std::cout << "Error: quantum-cycles must be between 1 and 2^32.\n";
         return false;
     }
 
-    if (minIns < 1 || maxIns < minIns) {
-        std::cout << "Error: Invalid min-ins or max-ins values.\n";
+    if (!parseUnsigned(settings["batch-process-freq"], parsedBatchFrequency)
+        || parsedBatchFrequency < 1) {
+        std::cout << "Error: batch-process-freq must be between 1 and 2^32.\n";
         return false;
     }
 
-    if (delaysPerExec < 0) {
-        std::cout << "Error: delays-per-exec cannot be negative.\n";
+    if (!parseUnsigned(settings["min-ins"], parsedMinIns)
+        || parsedMinIns < 1) {
+        std::cout << "Error: min-ins must be between 1 and 2^32.\n";
         return false;
     }
+
+    if (!parseUnsigned(settings["max-ins"], parsedMaxIns)
+        || parsedMaxIns < 1) {
+        std::cout << "Error: max-ins must be between 1 and 2^32.\n";
+        return false;
+    }
+
+    const std::string& delayText = settings[
+        hasDelayPerExec ? "delay-per-exec" : "delays-per-exec"
+    ];
+
+    if (!parseUnsigned(delayText, parsedDelay)) {
+        std::cout << "Error: execution delay must be between 0 and 2^32.\n";
+        return false;
+    }
+
+    if (hasDelayPerExec && hasDelaysPerExec) {
+        std::uint64_t alternateDelay = 0;
+        if (!parseUnsigned(settings["delays-per-exec"], alternateDelay)
+            || alternateDelay != parsedDelay) {
+            std::cout << "Error: delay-per-exec and delays-per-exec "
+                << "must match when both are specified.\n";
+            return false;
+        }
+    }
+
+    if (parsedMinIns > parsedMaxIns) {
+        std::cout << "Error: min-ins cannot exceed max-ins.\n";
+        return false;
+    }
+
+    numCpu = static_cast<std::uint32_t>(parsedNumCpu);
+    scheduler = parsedScheduler;
+    quantumCycles = parsedQuantum;
+    batchProcessFreq = parsedBatchFrequency;
+    minIns = parsedMinIns;
+    maxIns = parsedMaxIns;
+    delaysPerExec = parsedDelay;
 
     std::cout << "Configuration loaded successfully.\n";
     return true;
