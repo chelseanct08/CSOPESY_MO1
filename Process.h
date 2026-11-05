@@ -1,17 +1,12 @@
-
 #ifndef PROCESS_H
 #define PROCESS_H
 
 #include <cstdint>
-#include <deque>
+#include <cstddef>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-void queueProcessOutput(const std::string& message);
-std::vector<std::string> takeQueuedProcessOutput();
-void displayQueuedProcessOutput();
 
 struct Operand {
     bool isVariable;
@@ -36,20 +31,29 @@ struct Instruction {
     Type type;
     std::string text;
     std::string variable;
+    std::string printVariable;
     Operand operand1;
     Operand operand2;
     int value;
-    int repeatCount;
+    std::uint8_t sleepTicks;
+    std::uint64_t repeatCount;
     std::vector<Instruction> body;
 
     Instruction();
 
     static Instruction makePrint(const std::string& message);
+    static Instruction makePrintVariable(
+        const std::string& prefix,
+        const std::string& variable
+    );
     static Instruction makeDeclare(const std::string& variable, int value);
     static Instruction makeAdd(const std::string& destination, const Operand& first, const Operand& second);
     static Instruction makeSubtract(const std::string& destination, const Operand& first, const Operand& second);
-    static Instruction makeSleep(int ticks);
-    static Instruction makeFor(const std::vector<Instruction>& instructions, int repeats);
+    static Instruction makeSleep(std::uint64_t ticks);
+    static Instruction makeFor(
+        const std::vector<Instruction>& instructions,
+        std::uint64_t repeats
+    );
 };
 
 class Process {
@@ -64,28 +68,46 @@ public:
     Process(const std::string& name, const std::vector<Instruction>& instructions);
 
     const std::string& getName() const;
+    const std::string& getCreatedAt() const;
+    std::uint64_t getPid() const;
     State getState() const;
     void setState(State newState);
     bool isFinished() const;
-    int getInstructionCount() const;
-    int getCurrentInstruction() const;
-    int getRemainingSleepTicks() const;
+    std::size_t getInstructionCount() const;
+    std::size_t getCurrentInstruction() const;
+    std::uint64_t getRemainingSleepTicks() const;
+    std::vector<std::string> getLogs() const;
+    std::unordered_map<std::string, std::uint16_t> getVariables() const;
 
     void executeNextInstruction();
-    void tickSleep();
+    bool tickSleep();
 
 private:
     std::string name;
+    std::string createdAt;
+    std::uint64_t pid;
     State state;
+    struct ExecutionFrame {
+        const std::vector<Instruction>* body;
+        std::size_t nextIndex;
+        std::uint64_t repeatsRemaining;
+    };
+
     std::vector<Instruction> instructions;
-    std::unordered_map<std::string, uint16_t> variables;
-    int instructionIndex;
-    int remainingSleepTicks;
+    std::vector<ExecutionFrame> executionStack;
+    std::unordered_map<std::string, std::uint16_t> variables;
+    std::vector<std::string> logs;
+    std::size_t instructionIndex;
+    std::size_t instructionCount;
+    std::uint64_t remainingSleepTicks;
     mutable std::mutex processMutex;
 
-    void expandInstructions(const std::vector<Instruction>& source, int depth);
-    int getOperandValue(const Operand& operand);
-    uint16_t clampValue(int value);
+    const Instruction* nextExecutableInstruction();
+    static std::size_t countExecutableInstructions(
+        const std::vector<Instruction>& source
+    );
+    std::int64_t getOperandValue(const Operand& operand);
+    static std::uint16_t clampValue(std::int64_t value);
 };
 
 #endif

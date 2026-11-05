@@ -1,17 +1,18 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#include <cstdint>
 #include <string>
 
 class Config {
 public:
-    int numCpu;
+    std::uint32_t numCpu;
     std::string scheduler;
-    int quantumCycles;
-    int batchProcessFreq;
-    int minIns;
-    int maxIns;
-    int delaysPerExec;
+    std::uint64_t quantumCycles;
+    std::uint64_t batchProcessFreq;
+    std::uint64_t minIns;
+    std::uint64_t maxIns;
+    std::uint64_t delaysPerExec;
 
     Config();
 
@@ -19,4 +20,4 @@ public:
 };
 
 #endif
-#pragma once
+
