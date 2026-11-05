@@ -234,7 +234,7 @@ namespace {
                     }
                 }
                 else if (character == 0 || character == 224) {
-                    _getch();
+                    static_cast<void>(_getch());
                 }
                 else if (character >= 32 && character <= 126) {
                     command += static_cast<char>(character);
