@@ -54,7 +54,10 @@ private:
 
     void workerFunction();
     void clockFunction();
-    bool waitForNextCpuTick(std::uint64_t& observedTick);
+    bool waitForCpuTick(
+        std::uint64_t targetTick,
+        std::uint64_t& observedTick
+    );
 };
 
 #endif

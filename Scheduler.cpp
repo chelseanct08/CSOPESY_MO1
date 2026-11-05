@@ -113,10 +113,13 @@ void Scheduler::notifyTickWaiters() {
     tickCondition.notify_all();
 }
 
-bool Scheduler::waitForNextCpuTick(std::uint64_t& observedTick) {
+bool Scheduler::waitForCpuTick(
+    std::uint64_t targetTick,
+    std::uint64_t& observedTick
+) {
     std::unique_lock<std::mutex> lock(tickMutex);
-    tickCondition.wait(lock, [this, observedTick]() {
-        return cpuTicks.load() > observedTick || !running.load();
+    tickCondition.wait(lock, [this, targetTick]() {
+        return cpuTicks.load() >= targetTick || !running.load();
         });
 
     if (!running) {
@@ -124,12 +127,12 @@ bool Scheduler::waitForNextCpuTick(std::uint64_t& observedTick) {
     }
 
     observedTick = cpuTicks.load();
-    return true;
+    return observedTick >= targetTick;
 }
 
 void Scheduler::clockFunction() {
     while (running) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
         if (!running) {
             break;
         }
@@ -181,9 +184,10 @@ void Scheduler::workerFunction() {
         activeCores.fetch_add(1);
         std::uint64_t executedTicks = 0;
         std::uint64_t observedTick = cpuTicks.load();
+        std::uint64_t nextExecutionTick = observedTick + 1;
 
         while (running) {
-            if (!waitForNextCpuTick(observedTick)) {
+            if (!waitForCpuTick(nextExecutionTick, observedTick)) {
                 break;
             }
 
@@ -195,21 +199,15 @@ void Scheduler::workerFunction() {
                 break;
             }
 
-            if (config.delaysPerExec > 0) {
-                std::unique_lock<std::mutex> lock(tickMutex);
-                tickCondition.wait_for(
-                    lock,
-                    std::chrono::milliseconds(config.delaysPerExec),
-                    [this]() {
-                        return !running.load();
-                    }
-                );
-            }
-
             if (config.scheduler == "rr"
                 && executedTicks >= config.quantumCycles) {
                 break;
             }
+
+            nextExecutionTick = observedTick
+                + (config.delaysPerExec == 0
+                    ? 1
+                    : config.delaysPerExec);
         }
 
         activeCores.fetch_sub(1);
@@ -227,4 +225,3 @@ void Scheduler::workerFunction() {
         }
     }
 }
-

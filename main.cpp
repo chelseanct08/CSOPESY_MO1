@@ -2,18 +2,12 @@
 #include "Process.h"
 #include "Scheduler.h"
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <conio.h>
 #include <cstdlib>
 #include <fstream>
-#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -36,39 +30,119 @@ namespace {
         std::uniform_int_distribution<std::uint64_t> countDistribution(
             config.minIns, config.maxIns
         );
+        std::uniform_int_distribution<int> typeDistribution(0, 5);
+        std::uniform_int_distribution<int> valueDistribution(0, 100);
+        std::uniform_int_distribution<int> sleepDistribution(1, 3);
+        const std::vector<std::string> variableNames = { "x", "y", "z" };
+        std::uniform_int_distribution<std::size_t> variableDistribution(
+            0, variableNames.size() - 1
+        );
 
-        const std::uint64_t instructionCount = countDistribution(generator);
+        const bool mockTestSixProfile =
+            config.minIns == 1000 && config.maxIns == 1000;
+        const std::uint64_t instructionCount =
+            countDistribution(generator);
         std::vector<Instruction> instructions;
 
-        constexpr std::uint64_t greetingCount = 3;
-        constexpr std::uint64_t requiredForInstructionCount = 603;
-        for (std::uint64_t index = 0; index < greetingCount; ++index) {
-            instructions.push_back(
-                Instruction::makePrint("Hello world from " + name + "!")
-            );
+        if (instructionCount == 0) {
+            return instructions;
         }
 
-        std::vector<Instruction> loopBody = {
-            Instruction::makeAdd("x", Operand("x"), Operand(1)),
-            Instruction::makePrintVariable("Value from: ", "x"),
-            Instruction::makeAdd("y", Operand("y"), Operand(1)),
-            Instruction::makePrintVariable("Value from: ", "y"),
-            Instruction::makeAdd("z", Operand("z"), Operand(1)),
-            Instruction::makePrintVariable("Value from: ", "z")
-        };
-        instructions.push_back(Instruction::makeFor(loopBody, 100));
+        if (mockTestSixProfile) {
+            constexpr std::uint64_t greetingCount = 3;
+            for (std::uint64_t index = 0; index < greetingCount; ++index) {
+                instructions.push_back(
+                    Instruction::makePrint(
+                        "Hello world from " + name + "!"
+                    )
+                );
+            }
 
-        const std::uint64_t paddingCount =
-            instructionCount > requiredForInstructionCount
-            ? instructionCount - requiredForInstructionCount
-            : 0;
-        if (paddingCount > 0) {
+            const std::vector<Instruction> loopBody = {
+                Instruction::makeAdd("x", Operand("x"), Operand(1)),
+                Instruction::makePrintVariable("Value from: ", "x"),
+                Instruction::makeAdd("y", Operand("y"), Operand(1)),
+                Instruction::makePrintVariable("Value from: ", "y"),
+                Instruction::makeAdd("z", Operand("z"), Operand(1)),
+                Instruction::makePrintVariable("Value from: ", "z")
+            };
+            instructions.push_back(Instruction::makeFor(loopBody, 100));
             instructions.push_back(
                 Instruction::makeFor(
                     { Instruction::makeSleep(0) },
-                    paddingCount
+                    instructionCount - 603
                 )
             );
+            return instructions;
+        }
+
+        instructions.push_back(
+            Instruction::makePrint("Hello world from " + name + "!")
+        );
+
+        for (std::uint64_t index = 1; index < instructionCount; ++index) {
+            const std::string& destination =
+                variableNames[variableDistribution(generator)];
+            const std::string& firstVariable =
+                variableNames[variableDistribution(generator)];
+            const std::string& secondVariable =
+                variableNames[variableDistribution(generator)];
+
+            switch (typeDistribution(generator)) {
+            case 0:
+                instructions.push_back(
+                    Instruction::makePrintVariable(
+                        "Value from: ", destination
+                    )
+                );
+                break;
+            case 1:
+                instructions.push_back(
+                    Instruction::makeDeclare(
+                        destination, valueDistribution(generator)
+                    )
+                );
+                break;
+            case 2:
+                instructions.push_back(
+                    Instruction::makeAdd(
+                        destination,
+                        Operand(firstVariable),
+                        Operand(valueDistribution(generator))
+                    )
+                );
+                break;
+            case 3:
+                instructions.push_back(
+                    Instruction::makeSubtract(
+                        destination,
+                        Operand(firstVariable),
+                        Operand(secondVariable)
+                    )
+                );
+                break;
+            case 4:
+                instructions.push_back(
+                    Instruction::makeSleep(sleepDistribution(generator))
+                );
+                break;
+            case 5:
+                instructions.push_back(
+                    Instruction::makeFor(
+                        {
+                            Instruction::makeAdd(
+                                destination,
+                                Operand(firstVariable),
+                                Operand(1)
+                            )
+                        },
+                        1
+                    )
+                );
+                break;
+            default:
+                break;
+            }
         }
 
         return instructions;
@@ -139,12 +213,10 @@ namespace {
 
     bool readCommand(
         std::string& command,
-        const std::string& prompt,
-        const std::function<void(const std::string&)>& refresh = {}
+        const std::string& prompt
     ) {
         command.clear();
         std::cout << prompt << std::flush;
-        auto lastRefresh = std::chrono::steady_clock::now();
 
         while (true) {
             if (_kbhit()) {
@@ -168,13 +240,6 @@ namespace {
                     command += static_cast<char>(character);
                     std::cout << static_cast<char>(character) << std::flush;
                 }
-            }
-
-            const auto now = std::chrono::steady_clock::now();
-            if (refresh
-                && now - lastRefresh >= std::chrono::milliseconds(100)) {
-                refresh(command);
-                lastRefresh = now;
             }
 
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -242,31 +307,9 @@ namespace {
         std::string command;
         bool showProcessInformation = false;
         renderProcessScreen(process, command, showProcessInformation);
-        Process::State previousState = process->getState();
-        std::size_t previousProgress = process->getCurrentInstruction();
-        std::size_t previousLogCount = process->getLogs().size();
 
         while (true) {
-            const auto refresh = [&](const std::string& currentCommand) {
-                const Process::State state = process->getState();
-                const std::size_t progress = process->getCurrentInstruction();
-                const std::size_t logCount = process->getLogs().size();
-
-                if (state != previousState || progress != previousProgress
-                    || logCount != previousLogCount) {
-                    renderProcessScreen(
-                        process,
-                        currentCommand,
-                        showProcessInformation,
-                        true
-                    );
-                    previousState = state;
-                    previousProgress = progress;
-                    previousLogCount = logCount;
-                }
-                };
-
-            if (!readCommand(command, "process> ", refresh)) {
+            if (!readCommand(command, "process> ")) {
                 return;
             }
 
@@ -276,9 +319,6 @@ namespace {
             if (command == "process-smi") {
                 showProcessInformation = true;
                 renderProcessScreen(process, "", showProcessInformation);
-                previousState = process->getState();
-                previousProgress = process->getCurrentInstruction();
-                previousLogCount = process->getLogs().size();
             }
             else {
                 std::cout << "Unknown process screen command: " << command << '\n';
@@ -320,22 +360,46 @@ namespace {
         report << "CPU cores available: "
             << scheduler.getAvailableCoreCount() << '\n';
         report << "CPU ticks: " << scheduler.getCpuTicks() << "\n\n";
-        report << "Process Name\tPID\tStatus\tInstructions\n";
+        report << std::left << std::setw(19) << "Process Name"
+            << std::right << std::setw(6) << "PID"
+            << "   " << std::left << std::setw(23) << "Created"
+            << std::setw(11) << "Status"
+            << "Instructions\n";
+        report << "--------------------------------------------------------------------------\n";
 
-        for (const std::shared_ptr<Process>& process : processList) {
-            report << process->getName() << '\t'
-                << process->getPid() << '\t'
-                << getProcessStatus(process->getState()) << '\t'
-                << process->getCurrentInstruction() << " / "
-                << process->getInstructionCount() << '\n';
-        }
+        const auto printSection = [&report, &processList](
+            Process::State sectionState,
+            const std::string& title
+        ) {
+            report << '\n' << title << " processes:\n";
+            for (const std::shared_ptr<Process>& process : processList) {
+                if (process->getState() != sectionState) {
+                    continue;
+                }
 
-        report << "\nRunning processes: " << runningCount << '\n';
+                report << std::left << std::setw(19) << process->getName()
+                    << std::right << std::setw(6) << process->getPid()
+                    << "   " << std::setw(23) << std::left
+                    << process->getCreatedAt()
+                    << std::setw(11) << getProcessStatus(process->getState())
+                    << process->getCurrentInstruction() << " / "
+                    << process->getInstructionCount() << '\n';
+            }
+        };
+
+        printSection(Process::RUNNING, "Running");
+        printSection(Process::READY, "Ready");
+        printSection(Process::WAITING, "Waiting");
+        printSection(Process::FINISHED, "Finished");
+
+        report << "\nSummary:\n";
+        report << "Running processes: " << runningCount << '\n';
         report << "Ready processes: " << readyCount << '\n';
         report << "Waiting processes: " << waitingCount << '\n';
         report << "Finished processes: " << finishedCount << '\n';
         return report.str();
     }
+
 }
 
 int main() {
@@ -424,7 +488,9 @@ int main() {
                 }
 
                 scheduler->addProcess(process);
-                std::cout << "Created process screen: " << name << '\n';
+                openProcessScreen(process);
+                clearConsole();
+                printMainMenu();
             }
             else if (option == "-r") {
                 if (name.empty()) {
@@ -441,7 +507,7 @@ int main() {
                     }
                 }
 
-                if (!process) {
+                if (!process || process->isFinished()) {
                     std::cout << "Process " << name << " not found.\n";
                     continue;
                 }

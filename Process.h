@@ -35,7 +35,7 @@ struct Instruction {
     Operand operand1;
     Operand operand2;
     int value;
-    std::uint64_t sleepTicks;
+    std::uint8_t sleepTicks;
     std::uint64_t repeatCount;
     std::vector<Instruction> body;
 
@@ -68,6 +68,7 @@ public:
     Process(const std::string& name, const std::vector<Instruction>& instructions);
 
     const std::string& getName() const;
+    const std::string& getCreatedAt() const;
     std::uint64_t getPid() const;
     State getState() const;
     void setState(State newState);
@@ -83,6 +84,7 @@ public:
 
 private:
     std::string name;
+    std::string createdAt;
     std::uint64_t pid;
     State state;
     struct ExecutionFrame {

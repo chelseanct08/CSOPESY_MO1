@@ -2,10 +2,41 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <ctime>
+#include <iomanip>
 #include <limits>
+#include <sstream>
+#include <stdexcept>
 
 namespace {
     std::atomic<std::uint64_t> nextProcessId{ 0 };
+
+    std::string getCurrentDateTime() {
+        const std::time_t currentTime = std::time(nullptr);
+        std::tm localTime{};
+        localtime_s(&localTime, &currentTime);
+
+        std::ostringstream formattedTime;
+        formattedTime << std::put_time(&localTime, "%m/%d/%Y %I:%M:%S%p");
+        return formattedTime.str();
+    }
+
+    std::size_t getMaximumForDepth(
+        const std::vector<Instruction>& instructions
+    ) {
+        std::size_t maximumDepth = 0;
+        for (const Instruction& instruction : instructions) {
+            if (instruction.type == Instruction::FOR) {
+                maximumDepth = std::max(
+                    maximumDepth,
+                    static_cast<std::size_t>(1)
+                        + getMaximumForDepth(instruction.body)
+                );
+            }
+        }
+        return maximumDepth;
+    }
 }
 
 Operand::Operand() {
@@ -91,7 +122,9 @@ Instruction Instruction::makeSubtract(
 Instruction Instruction::makeSleep(std::uint64_t ticks) {
     Instruction instruction;
     instruction.type = SLEEP;
-    instruction.sleepTicks = ticks;
+    instruction.sleepTicks = static_cast<std::uint8_t>(
+        std::min<std::uint64_t>(ticks, std::numeric_limits<std::uint8_t>::max())
+    );
     return instruction;
 }
 
@@ -99,6 +132,12 @@ Instruction Instruction::makeFor(
     const std::vector<Instruction>& instructions,
     std::uint64_t repeats
 ) {
+    if (getMaximumForDepth(instructions) >= 3) {
+        throw std::invalid_argument(
+            "FOR instructions may be nested at most three levels."
+        );
+    }
+
     Instruction instruction;
     instruction.type = FOR;
     instruction.body = instructions;
@@ -110,6 +149,7 @@ Process::Process(
     const std::string& name,
     const std::vector<Instruction>& instructions
 ) : name(name),
+createdAt(getCurrentDateTime()),
 pid(nextProcessId.fetch_add(1)),
 state(READY),
 instructionIndex(0),
@@ -199,6 +239,10 @@ std::size_t Process::countExecutableInstructions(
 
 const std::string& Process::getName() const {
     return name;
+}
+
+const std::string& Process::getCreatedAt() const {
+    return createdAt;
 }
 
 std::uint64_t Process::getPid() const {
