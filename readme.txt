@@ -1,15 +1,15 @@
-# CSOPESY MO4 - Desktop-Style OS Mock-up
+MO1 - OS Emulator - Process Scheduler.pdf
 
-## Members
+Members
 
 - Hernaez, Raeka Estrelle R.
 - Liwanag, Ram Miguel C.
 - Serrano, Paul Rhazzel
 - Tamayo, Chelsea Nichole C.
 
-## How to Compile and Run
+How to Compile and Run
 
-1. Open *`Visual Studio`* and load the *`CSOPESY_MO4.slnx`* solution file.
+1. Open `Visual Studio` and load the `CSOPESY_MO1.slnx` solution file.
 
 2. Build the project using:
 
@@ -19,8 +19,8 @@
 
    `Start/Run` in Visual Studio.
 
-## Entry Class File
+Entry Class File
 
 The `main()` function is located in:
 
-**`main.cpp`**
+"main.cpp"
